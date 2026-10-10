@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Inter } from "next/font/google";
 import { createClient } from "@/lib/supabase/client";
+import { signUpAction, signInAction } from "./actions";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -78,6 +79,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [college, setCollege] = useState("iit_bombay");
   const [password, setPassword] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [showPassword, setShowPassword] = useState(false);
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -90,7 +92,7 @@ export default function LoginPage() {
     [password]
   );
 
-  // Check if user is already logged in
+  // Check if user is already logged in; redirect by role
   useEffect(() => {
     async function checkSession() {
       try {
@@ -98,7 +100,17 @@ export default function LoginPage() {
           data: { user },
         } = await supabase.auth.getUser();
         if (user) {
-          router.replace("/dashboard");
+          // Read role from profiles to decide destination
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("role")
+            .eq("id", user.id)
+            .maybeSingle();
+          const dest =
+            profile?.role === "trainer" || profile?.role === "admin"
+              ? "/trainer"
+              : "/dashboard";
+          router.replace(dest);
           return;
         }
       } catch {
@@ -126,46 +138,55 @@ export default function LoginPage() {
       return;
     }
 
+    if (isSignUp && role === "faculty" && !inviteCode.trim()) {
+      setErrorMessage("Please enter your trainer invite code.");
+      return;
+    }
+
     startTransition(async () => {
       try {
         if (isSignUp) {
-          const { data, error } = await supabase.auth.signUp({
+          // Role assignment is done entirely on the server — never trust the client.
+          const result = await signUpAction({
             email: email.trim(),
             password,
-            options: {
-              data: {
-                full_name: fullName.trim(),
-                role: role === "faculty" ? "trainer" : "student",
-                college: college || undefined,
-              },
-            },
+            fullName: fullName.trim(),
+            role,
+            college: college || undefined,
+            inviteCode: inviteCode.trim() || undefined,
           });
 
-          if (error) {
-            setErrorMessage(error.message);
+          if (!result.ok) {
+            setErrorMessage(result.error);
             return;
           }
 
-          if (data?.session) {
-            window.location.href = "/dashboard";
-          } else {
+          if (result.needsEmailVerification) {
             setSuccessMessage(
-              "Account created successfully! If email verification is required, please check your inbox before signing in."
+              "Account created! Please check your inbox and verify your email before signing in."
             );
             setIsSignUp(false);
+          } else {
+            // Session is live — redirect by role
+            window.location.href =
+              result.role === "trainer" ? "/trainer" : "/dashboard";
           }
         } else {
-          const { error } = await supabase.auth.signInWithPassword({
+          // Sign-in: server reads the authoritative role from profiles
+          const result = await signInAction({
             email: email.trim(),
             password,
           });
 
-          if (error) {
-            setErrorMessage(error.message);
+          if (!result.ok) {
+            setErrorMessage(result.error);
             return;
           }
 
-          window.location.href = "/dashboard";
+          window.location.href =
+            result.role === "trainer" || result.role === "admin"
+              ? "/trainer"
+              : "/dashboard";
         }
       } catch (err: unknown) {
         if (err instanceof Error) {
@@ -503,6 +524,38 @@ export default function LoginPage() {
                         unfold_more
                       </span>
                     </div>
+                  </div>
+                )}
+
+                {/* Trainer Invite Code (visible when role=faculty in Sign Up) */}
+                {isSignUp && role === "faculty" && (
+                  <div className="flex flex-col gap-1.5">
+                    <label
+                      className="font-label-sm text-label-sm text-on-surface font-medium flex items-center justify-between"
+                      htmlFor="inviteCode"
+                    >
+                      <span>Trainer Invite Code</span>
+                      <span className="text-caption text-error font-medium">Required</span>
+                    </label>
+                    <div className="relative flex items-center">
+                      <span className="material-symbols-outlined absolute left-3 text-on-surface-variant pointer-events-none text-[20px]">
+                        key
+                      </span>
+                      <input
+                        className="w-full min-h-[44px] h-[44px] pl-10 pr-4 rounded-lg bg-surface-container-low text-on-surface placeholder:text-outline font-body-sm text-body-sm focus:outline-none focus:bg-surface-container-lowest focus:ring-2 focus:ring-primary/20 focus:shadow-xs transition-all"
+                        id="inviteCode"
+                        name="inviteCode"
+                        placeholder="Contact your administrator for this code"
+                        required
+                        type="text"
+                        value={inviteCode}
+                        onChange={(e) => setInviteCode(e.target.value)}
+                        disabled={isPending}
+                      />
+                    </div>
+                    <p className="font-caption text-caption text-on-surface-variant">
+                      Trainers are verified by campus administrators. Contact your placement cell if you don&apos;t have a code.
+                    </p>
                   </div>
                 )}
 
